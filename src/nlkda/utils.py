@@ -269,7 +269,7 @@ class LpDist(Distance):
         x: torch.FloatTensor,
         y: torch.FloatTensor,
     ) -> torch.FloatTensor:  # noqa: D102
-        return torch.cdist(x, y, p=self.p)
+        return torch.cdist(x, y, p=self.p, compute_mode='donot_use_mm_for_euclid_dist')
 
 
 class CosineDistance(Distance):

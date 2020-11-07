@@ -94,14 +94,14 @@ class BoundModel(BasicModel, ABC):
         x: np.ndarray,
         y: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> None:
         """
         set min and max .
 
         :type agg_point: bool
-            if true, bounds min/max is set to min/max of all points
-            if false, bounds min/max is set to min/max of all k
+            if true, bounds min/max is set to min/max aggregated over all points
+            if false, bounds min/max is set to min/max aggregated over all k
         :param is_predicted: bool
             if true, x are already the predictions
             if false, x are data points and need to be predicted first
@@ -120,14 +120,14 @@ class BoundModel(BasicModel, ABC):
         self,
         x: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Predict bounds of the k-distance.
 
         :param agg_point: bool
-            if true, bounds are calculated over points
-            if false, bounds are calculated over k
+            if true, bounds are calculated by aggregating over points
+            if false, bounds are calculated by aggregating over k
         :param x: numpy.ndarray, shape: (n, d), dtype: float
             The data points.
 
@@ -208,7 +208,7 @@ class KAsInputWrapper(BoundModel):
         x: np.ndarray,
         y: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ):
         y_train = y.reshape(-1)
         if is_predicted:
@@ -223,19 +223,19 @@ class KAsInputWrapper(BoundModel):
         diff = diff.reshape(y.shape)
 
         if agg_point:
-            # Compute minimal and maximal training error for each point
-            self.min_diff = diff.min(axis=1)
-            self.max_diff = diff.max(axis=1)
-        else:
-            # Compute minimal and maximal training error for each k
+            # Compute minimal and maximal training error by aggregating over points
             self.min_diff = diff.min(axis=0)
             self.max_diff = diff.max(axis=0)
+        else:
+            # Compute minimal and maximal training error by aggregating over k
+            self.min_diff = diff.min(axis=1)
+            self.max_diff = diff.max(axis=1)
 
     def predict_bounds(
         self,
         x: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         if is_predicted:
             y_pred = x
@@ -243,11 +243,11 @@ class KAsInputWrapper(BoundModel):
             y_pred = self.predict(x)
         pred_rs = np.reshape(y_pred, (-1, K_MAX))
         if agg_point:
-            lower = pred_rs + self.min_diff[:, None]
-            upper = pred_rs + self.max_diff[:, None]
-        else:
             lower = pred_rs + self.min_diff[None, :]
             upper = pred_rs + self.max_diff[None, :]
+        else:
+            lower = pred_rs + self.min_diff[:, None]
+            upper = pred_rs + self.max_diff[:, None]
         return lower.clip(min=0), upper.clip(min=0)
 
 
@@ -310,7 +310,7 @@ class KAsOutputWrapper(BoundModel, ABC):
         x: np.ndarray,
         y: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ):
         if is_predicted:
             y_pred = x
@@ -324,19 +324,19 @@ class KAsOutputWrapper(BoundModel, ABC):
         diff = diff.reshape(y.shape)
 
         if agg_point:
-            # Compute minimal and maximal training error for each point
-            self.min_diff = diff.min(axis=1)
-            self.max_diff = diff.max(axis=1)
-        else:
-            # Compute minimal and maximal training error for each k
+            # Compute minimal and maximal training error by aggregating over points
             self.min_diff = diff.min(axis=0)
             self.max_diff = diff.max(axis=0)
+        else:
+            # Compute minimal and maximal training error by aggregating over k
+            self.min_diff = diff.min(axis=1)
+            self.max_diff = diff.max(axis=1)
 
     def predict_bounds(
         self,
         x: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         if is_predicted:
             y_pred = x
@@ -345,11 +345,11 @@ class KAsOutputWrapper(BoundModel, ABC):
 
         pred_rs = np.reshape(y_pred, (-1, K_MAX))
         if agg_point:
-            lower = pred_rs + self.min_diff[:, None]
-            upper = pred_rs + self.max_diff[:, None]
-        else:
             lower = pred_rs + self.min_diff[None, :]
             upper = pred_rs + self.max_diff[None, :]
+        else:
+            lower = pred_rs + self.min_diff[:, None]
+            upper = pred_rs + self.max_diff[:, None]
         return lower.clip(min=0), upper.clip(min=0)
 
 
@@ -377,7 +377,7 @@ class MonotonicityWrapper(BoundModel, ABC):
         self,
         x: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         lower, upper = self.base.predict_bounds(x, is_predicted, agg_point)
 
@@ -394,7 +394,7 @@ class MonotonicityWrapper(BoundModel, ABC):
         x: np.ndarray,
         y: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> None:
         self.base.set_min_max(x=x, y=y, is_predicted=is_predicted, agg_point=agg_point)
 
@@ -449,7 +449,7 @@ class NormalizationWrapper(BoundModel, ABC):
         x: np.ndarray,
         y: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ):
         if is_predicted:
             y_pred = x
@@ -463,18 +463,17 @@ class NormalizationWrapper(BoundModel, ABC):
         diff = diff.reshape(y.shape)
 
         if agg_point:
-            self.min_diff = diff.min(axis=1)
-            self.max_diff = diff.max(axis=1)
-        else:
-            # Compute minimal and maximal training error for each k
             self.min_diff = diff.min(axis=0)
             self.max_diff = diff.max(axis=0)
+        else:
+            self.min_diff = diff.min(axis=1)
+            self.max_diff = diff.max(axis=1)
 
     def predict_bounds(
         self,
         x: np.ndarray,
         is_predicted: bool = False,
-        agg_point: bool = False
+        agg_point: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
         if is_predicted:
             y_pred = x
@@ -482,11 +481,11 @@ class NormalizationWrapper(BoundModel, ABC):
             y_pred = self.predict(x)
         pred_rs = np.reshape(y_pred, (-1, K_MAX))
         if agg_point:
-            lower = pred_rs + self.min_diff[:, None]
-            upper = pred_rs + self.max_diff[:, None]
-        else:
             lower = pred_rs + self.min_diff[None, :]
             upper = pred_rs + self.max_diff[None, :]
+        else:
+            lower = pred_rs + self.min_diff[:, None]
+            upper = pred_rs + self.max_diff[:, None]
         return lower.clip(min=0), upper.clip(min=0)
 
 

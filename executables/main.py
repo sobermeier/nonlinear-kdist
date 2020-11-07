@@ -17,7 +17,8 @@ from nlkda.data.loader import get_data
 from nlkda.eval import evaluate_model, get_model_size
 from nlkda.models.base import BoundModel, FormulationWrapperEnum, is_multi_output
 from nlkda.models.boosting import BoostingWithCsModel
-from nlkda.models.utils import ModelEnum, configure_param_space_nn, create_model_from_config, create_wrapper_from_config, save_model_to_directory
+from nlkda.models.utils import ModelEnum, configure_param_space_nn, create_model_from_config, \
+    create_wrapper_from_config, save_model_to_directory
 from nlkda.settings import K_MAX
 from nlkda.utils import MLFlowClient, enum_values, flatten_dict, save_to_file, tune_bool, tune_enum, tune_q_log_uniform
 
@@ -32,7 +33,7 @@ def get_model_search_space(model_type: ModelEnum) -> Mapping[str, Any]:
     if model_type == ModelEnum.RF:
         return dict(
             max_depth=tune.randint(1, 10),
-            n_estimators=tune_q_log_uniform(low=1, high=100, q=1),
+            n_estimators=tune_q_log_uniform(high=100, q=1),
         )
     elif model_type == ModelEnum.DT:
         return dict(
@@ -46,7 +47,7 @@ def get_model_search_space(model_type: ModelEnum) -> Mapping[str, Any]:
     elif model_type == ModelEnum.GB:
         return dict(
             max_leaf_nodes=tune_q_log_uniform(low=4, high=15, q=1),
-            n_estimators=tune_q_log_uniform(low=1, high=500, q=1),
+            n_estimators=tune_q_log_uniform(high=500, q=1),
             learning_rate=tune.loguniform(1.0e-04, 1.0e+01),
         )
     elif model_type == ModelEnum.NN:
@@ -109,7 +110,7 @@ def objective(config, reporter):
 
     # SAMPLE WEIGHTS
     sw_type = config["sample_weights"]
-    if sw_type == SampleWeightsEnum.MEAN_CS_POINT.value:
+    if sw_type == SampleWeightsEnum.MEAN_CS_K.value:
         boost_iterations = config["boosting"]["iterations"]
     else:
         boost_iterations = 1
@@ -137,7 +138,7 @@ def objective(config, reporter):
 
         # Fit model
         if boost_iterations > 1:
-            sw_agg_point = True if sw_type == SampleWeightsEnum.MEAN_CS_POINT.value else False
+            sw_agg_point = False if sw_type == SampleWeightsEnum.MEAN_CS_K.value else True
             logger_main.info("Creating Boosting Model for CS!")
             boosting_model = BoostingWithCsModel(
                 base=model,
@@ -174,21 +175,8 @@ def objective(config, reporter):
         mae = mean_absolute_error(y.reshape(-1), pred)
         mse = mean_squared_error(y.reshape(-1), pred)
 
-        # error over k
-        min_error, max_error, cs_mean, cs_median, cs_mean_mono, cs_median_mono = _evaluate_aggregation(
-            x=x,
-            kd=y,
-            distance=distance,
-            eval_batch_size=eval_batch_size,
-            model=model,
-            output_path=output_path,
-            pred=pred,
-            skd_max=skd_max,
-            skd_min=skd_min,
-            agg_point=False,
-        )
-        # error over p# error over points
-        _, _, cs_mean_point, cs_median_point, cs_mean_mono_point, cs_median_mono_point = _evaluate_aggregation(
+        # error over points --> O(k_max), model size increases by 2*k_max
+        min_error, max_error, cs_mean_p, cs_median_p, cs_mean_mono_p, cs_median_mono_p = _evaluate_aggregation(
             x=x,
             kd=y,
             distance=distance,
@@ -200,9 +188,22 @@ def objective(config, reporter):
             skd_min=skd_min,
             agg_point=True,
         )
+        # error over k --> O(n), model size increases by 2*n
+        _, _, cs_mean_k, cs_median_k, cs_mean_mono_k, cs_median_mono_k = _evaluate_aggregation(
+            x=x,
+            kd=y,
+            distance=distance,
+            eval_batch_size=eval_batch_size,
+            model=model,
+            output_path=output_path,
+            pred=pred,
+            skd_max=skd_max,
+            skd_min=skd_min,
+            agg_point=False,
+        )
 
-        # combine error over points and error over k
-        _, _, cs_mean_k_point, cs_median_k_point, cs_mean_mono_k_point, cs_median_mono_k_point = _evaluate_aggregation(
+        # combine error over points and k, model size increases by 2*n + 2*k_max
+        _, _, cs_mean_comb, cs_median_comb, cs_mean_mono_comb, cs_median_mono_comb = _evaluate_aggregation(
             x=x,
             kd=y,
             distance=distance,
@@ -220,6 +221,9 @@ def objective(config, reporter):
             "mae": mae,
             "mse": mse,
             "model_size": model_size,
+            "size_agg_p": model_size + (2 * K_MAX),
+            "size_agg_k": model_size + (2 * config["n"]),
+            "size_combined": model_size + (2 * K_MAX) + (2 * config["n"]),
             "max_error": {
                 "error": max_error,
                 "k": int(np.argmax(model.max_diff)) + 1,
@@ -228,24 +232,24 @@ def objective(config, reporter):
                 "error": min_error,
                 "k": int(np.argmin(model.min_diff)) + 1,
             },
-            "cs_mean": cs_mean,
-            "cs_median": cs_median,
-            "cs_mean_mono": cs_mean_mono,
-            "cs_median_mono": cs_median_mono,
-            "cs_mean_point": cs_mean_point,
-            "cs_median_point": cs_median_point,
-            "cs_mean_mono_point": cs_mean_mono_point,
-            "cs_median_mono_point": cs_median_mono_point,
-            "cs_mean_k_point": cs_mean_k_point,
-            "cs_median_k_point": cs_median_k_point,
-            "cs_mean_mono_k_point": cs_mean_mono_k_point,
-            "cs_median_mono_k_point": cs_median_mono_k_point
+            "cs_mean_agg_p": cs_mean_p,
+            "cs_median_agg_p": cs_median_p,
+            "cs_mean_mono_agg_p": cs_mean_mono_p,
+            "cs_median_mono_agg_p": cs_median_mono_p,
+            "cs_mean_agg_k": cs_mean_k,
+            "cs_median_agg_k": cs_median_k,
+            "cs_mean_mono_agg_k": cs_mean_mono_k,
+            "cs_median_mono_agg_k": cs_median_mono_k,
+            "cs_mean_combined": cs_mean_comb,
+            "cs_median_combined": cs_median_comb,
+            "cs_mean_mono_combined": cs_mean_mono_comb,
+            "cs_median_mono_combined": cs_median_mono_comb
         }
 
         # log all results
         result = flatten_dict(result)
         db.finalise_experiment(result=result)
-        reporter(cs_mean_mono=cs_mean_mono)
+        reporter(cs_mean_mono_p=cs_mean_mono_p)
         return result
 
     except RuntimeError as error:
@@ -293,7 +297,7 @@ def _evaluate_aggregation(
 class SampleWeightsEnum(Enum):
     """Enum for sample weights."""
     NONE = "NO"
-    MEAN_CS_POINT = "MeanCSPoint"
+    MEAN_CS_K = "mean_cs_agg_k"
 
 
 def main(
@@ -333,14 +337,17 @@ def main(
         },
     )
 
-    print("Best config: ", analysis.get_best_config(metric="cs_mean_mono", mode="min"))
+    print("Best config: ", analysis.get_best_config(metric="cs_mean_mono_p", mode="min"))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default=DatasetEnum.OL.value, help="The name of the dataset.", choices=enum_values(enum_cls=DatasetEnum))
-    parser.add_argument("--model", type=str, default=ModelEnum.NN.value, help="The name of the model.", choices=enum_values(enum_cls=ModelEnum))
-    parser.add_argument("--sample_weight", type=str, default=SampleWeightsEnum.NONE.value, help="The name of the sample weights.", choices=enum_values(enum_cls=SampleWeightsEnum))
+    parser.add_argument("--dataset", type=str, default=DatasetEnum.OL.value, help="The name of the dataset.",
+                        choices=enum_values(enum_cls=DatasetEnum))
+    parser.add_argument("--model", type=str, default=ModelEnum.NN.value, help="The name of the model.",
+                        choices=enum_values(enum_cls=ModelEnum))
+    parser.add_argument("--sample_weight", type=str, default=SampleWeightsEnum.NONE.value,
+                        help="The name of the sample weights.", choices=enum_values(enum_cls=SampleWeightsEnum))
     parser.add_argument("--data_root", type=str, default="/tmp/data", help="The directory where data is stored.")
     parser.add_argument("--tracking_uri", type=str, default="http://localhost:5000", help="The MLFlow tracking URI.")
     parser.add_argument("--trials", type=int, default=10, help="The number of HPO trials to run.")

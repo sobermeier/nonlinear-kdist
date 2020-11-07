@@ -315,7 +315,7 @@ def tune_q_log_uniform(
     q: int = 1,
 ):
     def func(spec):
-        return int(numpy.round(numpy.random.uniform(numpy.log(low), numpy.log(high)))) // q * q
+        return int(max(low, numpy.round(numpy.random.uniform(numpy.log(low), numpy.log(high))))) // q * q
 
     return tune.sample_from(func)
 
